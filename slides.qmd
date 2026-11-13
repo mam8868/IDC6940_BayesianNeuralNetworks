@@ -17,101 +17,261 @@ editor:
     wrap: 72
 ---
 
-::: callout-important
-**Remember:** Your goal is to make your audience understand and care
-about your findings. By crafting a compelling story, you can effectively
-communicate the value of your data science project.
 
-Carefully read this template since it has instructions and tips to
-writing!
+## 1. Operational Motivation: The EW Battleground {data-background-color="#1a1e24" .scrollable}
 
-More information about `revealjs`:
-<https://quarto.org/docs/reference/formats/presentations/revealjs.html>
+### The Electronic Warfare Landscape
+- **Proliferation of Autonomous Systems:** Modern unmanned aerial platforms (UAVs) rely completely on RF datalinks for telemetry, command, and control.
+- **The Contested Spectrum:** Adversarial jamming and spoofing severely disrupt mission-critical wireless communications.
+- **The Failure of Deterministic AI:** Conventional deep learning models minimize empirical risk, producing **overconfident point estimates** on noisy or jammed signals.
+
+::: {.callout-important}
+### The Core Challenge
+In contested electromagnetic environments, knowing **how confident** a receiver is matters just as much as its estimated Signal-to-Noise Ratio (SNR).
 :::
 
-## Introduction  {.smaller}
-
--   Develop a storyline that captures attention and maintains interest.
-
--   Your audience is your peers
-
--   Clearly state the problem or question you're addressing.
-
--   Introduce why it is relevant needs.
-
--   Provide an overview of your approach.
-
-In kernel estimator, weight function is known as kernel function
-[@efr2008]. Cite this paper [@bro2014principal]. The GEE [@wang2014].
-The PCA [@daffertshofer2004pca]\*
-
-## Methods
-
--   Detail the models or algorithms used.
-
--   Justify your choices based on the problem and data.
 
 
+---
 
-## Data Exploration and Visualization
+## 2. Research Objective & Central Hypothesis {.scrollable}
 
--   Describe your data sources and collection process.
+::: {.panel-tabset}
 
--   Present initial findings and insights through visualizations.
+### Research Question
 
--   Highlight unexpected patterns or anomalies.
+"How effectively can a Bayesian Neural Network predict SNR from statistical $I/Q$ moments, and can rigorous uncertainty quantification characterize signal degradation under interference?"
 
-## Data Exploration and Visualization {.smaller}
 
-A study was conducted to determine how...
+### Primary Technical Objectives
 
-```{r, warning=FALSE, echo=F, message=FALSE}
-# loading packages 
-library(tidyverse)
-library(knitr)
-library(ggthemes)
-library(ggrepel)
-library(dslabs)
-```
+1. **Probabilistic Estimation:** Treat network weights as distributions to model both signal expectation and predictive uncertainty.
+2. **Methodological Rigor:** Resolve classical linear rank deficiencies vs. neural network overparameterization without data leakage.
+3. **Tactical Utility:** Decompose predictive variance into channel noise (**aleatoric**) versus model confidence (**epistemic**) for EW decision support.
 
-```{r, warning=FALSE, echo=F}
-# Load Data
-#kable(head(murders))
 
-ggplot1 = murders %>% ggplot(mapping = aes(x=population/10^6, y=total)) 
+:::
 
-  ggplot1 + geom_point(aes(col=region), size = 4) +
-  geom_text_repel(aes(label=abb)) +
-  scale_x_log10() +
-  scale_y_log10() +
-  geom_smooth(formula = "y~x", method=lm,se = F)+
-  xlab("Populations in millions (log10 scale)") + 
-  ylab("Total number of murders (log10 scale)") +
-  ggtitle("US Gun Murders in 2010") +
-  scale_color_discrete(name = "Region")+
-      theme_bw()
-  
 
-```
 
-## Modeling and Results
+---
 
--   Explain your data preprocessing and cleaning steps.
+## 3. Data Source: DeepSig RadioML 2018.01A {.scrollable}
 
--   Present your key findings in a clear and concise manner.
+### Dataset Schema & Subsampling
+- **Full Benchmark:** 2,555,904 frames across 24 digital and analog modulations.
+- **Project Scope:** Stratified random sample of $N = 5,000$ signal frames.
+- **SNR Sweep:** 26 discrete SNR levels from $-20\text{ dB}$ to $+30\text{ dB}$ ($2\text{ dB}$ increments).
+- **Raw Baseband Signals:** Each observation consists of 1,024 in-phase ($I$) and quadrature ($Q$) time samples.
 
--   Use visuals to support your claims.
+| Feature Type | Variables Engineered | Physical Significance |
+| :--- | :--- | :--- |
+| **Time-Domain** | `I_mean`, `Q_mean`, `I_var`, `Q_var`, `I_sd`, `Q_sd` | DC bias and raw component variance |
+| **Power-Domain** | `I_power`, `Q_power` | Average RF channel energy ($\frac{1}{T}\sum x_t^2$) |
+| **Magnitude** | `IQ_mean`, `IQ_sd` | Instantaneous envelope amplitude statistics |
+| **Metadata** | `Modulation` (24 classes) | One-hot encoded modulation formats |
 
--   **Tell a story about what the data reveals.**
 
-```{r}
+---
+
+## 4. Preprocessing & Preventing Data Leakage {.scrollable}
+
+### Partition-First Workflow
+To eliminate data leakage, partitioning was executed strictly **before** calculating standardization statistics:
+
+$$\mathcal{D} \longrightarrow \mathcal{D}_{\text{train}} \;(70\%,\, N=3,500) \quad \text{and} \quad \mathcal{D}_{\text{test}} \;(30\%,\, N=1,500)$$
+
+1. **Moments Frozen on Training Split:**
+   $$\hat{\mu}_{j,\text{train}} = \frac{1}{N_{\text{tr}}}\sum_{i \in \text{tr}} x_{ij}, \qquad \hat{\sigma}_{j,\text{train}} = \sqrt{\frac{1}{N_{\text{tr}}-1}\sum_{i \in \text{tr}} (x_{ij} - \hat{\mu}_{j,\text{train}})^2}$$
+2. **Applied Uniformly to Test Split:**
+   $$\tilde{x}_{ij,\text{test}} = \frac{x_{ij,\text{test}} - \hat{\mu}_{j,\text{train}}}{\hat{\sigma}_{j,\text{train}}}$$
+
+### Outlier Preservation
+- Extreme power values (`I_power` max = 391.88, `Q_power` max = 566.98) were **retained**.
+- These represent high-gain signals at $+30\text{ dB}$ SNR; trimming them would artificially clip receiver dynamic range.
+
+
+---
+
+## 5. Multicollinearity: OLS vs. Bayesian Neural Networks {.scrollable}
+
+### The Physical Power Identity
+$$P_{\text{total}} = P_I + P_Q = \frac{1}{T}\sum_{t=1}^T I_t^2 + \frac{1}{T}\sum_{t=1}^T Q_t^2$$
+
+Confirmed empirically: $$\bar{P}_I (2.598) + \bar{P}_Q (2.612) = \bar{P}_{\text{total}} (5.210)$$ (`alias()` in R).
 
 ```
+   Linear Models (OLS)                  Bayesian Neural Networks (BNNs)
+┌─────────────────────────────┐        ┌────────────────────────────────┐
+│ • Gram matrix X^T X is      │   vs   │ • No matrix inversion; uses    │
+│   singular (det = 0)        │        │   mini-batch ELBO gradients    │
+│ • (X^T X)^(-1) does not     │        │ • Inherently non-identifiable  │
+│   exist                     │        │   due to permutation symmetry  │
+│ • Beta weights mathematically│       │ • Collinearity creates flat    │
+│   non-identifiable          │        │   loss ridges; slows training  │
+└─────────────────────────────┘        └────────────────────────────────┘
+```
 
-## Conclusion
+::: {.callout-tip}
+### Rationale for Pruning `IQ_power`
+`IQ_power` was eliminated not because neural networks fail mathematically, but to remove redundant optimization ridges, accelerate ELBO convergence, and preserve an identical design matrix for linear baselines.
+:::
 
--   Summarize your key findings.
 
--   Discuss the implications of your results.
+---
 
-## References
+## 6. Bayesian Architecture & Variational Inference {.scrollable}
+
+### 1. Prior Specification
+Independent isotropic Gaussian prior over all weights:
+$$p(\mathbf{w}) = \mathcal{N}\left(\mathbf{0}, \sigma_0^2 \mathbf{I}\right) \quad \Longleftrightarrow \quad \text{Acts as adaptive } L_2 \text{ weight decay}$$
+
+### 2. Heteroscedastic Likelihood Head
+The network outputs predictive mean $\mu(\mathbf{x})$ and scale $\rho(\mathbf{x})$:
+$$p(y \mid \mathbf{x}, \mathbf{w}) = \mathcal{N}\left(y \;\middle|\; \mu(\mathbf{x}; \mathbf{w}),\, \sigma^2(\mathbf{x}; \mathbf{w})\right), \quad \sigma = \ln(1 + e^{\rho}) + 10^{-4}$$
+
+### 3. Optimization via the Evidence Lower Bound (ELBO)
+Approximating posterior $p(\mathbf{w}\mid\mathcal{D})$ with variational family $q_{\boldsymbol{\theta}}(\mathbf{w})$:
+$$\text{ELBO}(\boldsymbol{\theta}) = \sum_{i=1}^N \mathbb{E}_{q_{\boldsymbol{\theta}}(\mathbf{w})}\left[\ln p(y_i \mid \mathbf{x}_i, \mathbf{w})\right] - D_{\text{KL}}\left(q_{\boldsymbol{\theta}}(\mathbf{w}) \parallel p(\mathbf{w})\right)$$
+
+- Evaluated via closed-form Gaussian KL divergence and mini-batch sampling.
+
+
+---
+
+## 7. Efficient Scaling: DenseFlipout Layers  {.scrollable}
+
+### Why Standard Variational Layers Struggle
+- Drawing a single weight sample $\mathbf{w}^{(s)}$ per mini-batch causes high gradient variance.
+- Severely slows training on deep architectures.
+
+### The Flipout Solution (TensorFlow Probability)
+Applies rank-one sign perturbations to decorrelate weight draws across the batch:
+
+$$\mathbf{W}^{(b)} = \boldsymbol{\mu}_q + \boldsymbol{\Sigma}_q^{1/2} \odot \left(\mathbf{r}_b \mathbf{s}_b^T\right), \quad \mathbf{r}_b, \mathbf{s}_b \in \{-1, +1\}$$
+
+```
+Input (35 Features) 
+  └─► DenseFlipout(128, ReLU) 
+        └─► DenseFlipout(64, ReLU) 
+              └─► DenseFlipout(32, ReLU) 
+                    └─► DenseFlipout(16, ReLU) 
+                          └─► DenseFlipout(8, ReLU) 
+                                └─► Distributional Head: [μ(x), σ(x)]
+```
+
+
+---
+
+## 8. Principled Uncertainty Decomposition  {.scrollable}
+
+### The Law of Total Variance
+Averaging predictive standard deviations ($\frac{1}{S}\sum \sigma_s$) is **statistically invalid**.
+For $$S = 200$$ Monte Carlo weight draws, total predictive variance is:
+
+$$\text{Var}(y^* \mid \mathbf{x}^*) = \underbrace{\mathbb{E}_{\mathbf{w}}\left[\text{Var}(y^* \mid \mathbf{x}^*, \mathbf{w})\right]}_{\text{\bf Aleatoric Uncertainty}} + \underbrace{\text{Var}_{\mathbf{w}}\left(\mathbb{E}[y^* \mid \mathbf{x}^*, \mathbf{w}]\right)}_{\text{\bf Epistemic Uncertainty}}$$
+
+$$\sigma_{\text{total}}^2(\mathbf{x}^*) = \frac{1}{S}\sum_{s=1}^S \sigma^2(\mathbf{x}^*; \mathbf{w}^{(s)}) + \frac{1}{S}\sum_{s=1}^S \left(\mu(\mathbf{x}^*; \mathbf{w}^{(s)}) - \hat{y}^*\right)^2$$
+
+::: {.callout-note}
+- **Aleatoric ($\sigma_{\text{aleatoric}}$):** Inherent, irreducible RF channel noise.
+- **Epistemic ($\sigma_{\text{epistemic}}$):** Model parameter uncertainty; shrinks with more training data.
+:::
+
+
+---
+
+## 9. Training Dynamics & Diagnostic Insights  {.scrollable}
+
+### Convergence vs. Late-Stage Overfitting
+- Total ELBO loss dropped steadily from $\sim 43,000$ to $16,000$.
+- Validation MSE and MAE reached their minimum around **epoch 35–45**.
+- From epoch 140 to 200, validation MSE began climbing back toward 280.
+
+```
+Error / Loss
+ │  ELBO Loss (Smoothly Declines) ───────┐
+ │                                       │
+ │  Validation MSE:                      ▼
+ │  \                                    / (Late Overfitting)
+ │   \________ Optimal Early Stop ______/
+ │             (Epoch ~40)
+ └────────────────────────────────────────────► Epochs (200)
+```
+
+::: {.callout-warning}
+### Diagnostic Conclusion
+DenseFlipout models can experience late-stage likelihood memorization. Enforcing **Early Stopping** at epoch 40 prevents degradation of generalization performance.
+:::
+
+
+---
+
+## 10. Empirical Benchmarks & Performance Comparison  {.scrollable}
+
+### Model Comparison ($N_{\text{test}} = 1,500$ observations)
+
+| Model Architecture | Test RMSE (dB) | Test MAE (dB) | Test $R^2$ | 95% PICP | MPIW (dB) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Ordinary Least Squares (OLS)** | 7.84 | 6.42 | 0.718 | — | — |
+| **Ridge Regression ($L_2$)** | 7.82 | 6.40 | 0.719 | — | — |
+| **Lasso Regression ($L_1$)** | 7.86 | 6.45 | 0.716 | — | — |
+| **Deterministic MLP (5 Layers)** | 4.92 | 3.81 | 0.889 | — | — |
+| **Bayesian Neural Network (Ours)**| **4.16** | **3.18** | **0.920** | **0.948** | **15.82** |
+
+### Key Findings
+- **Non-Linear Dynamics:** Linear baselines plateau at $R^2 \approx 0.72$, confirming the non-linear relationship between $I/Q$ moments and logarithmic SNR.
+- **BNN Accuracy:** BNN delivers the lowest point prediction error ($\text{RMSE} = 4.16\text{ dB}$).
+- **Well-Calibrated Uncertainty:** The empirical 95% Prediction Interval Coverage Probability (**PICP = 0.948**) matches the nominal 0.95 target.
+
+
+---
+
+## 11. Uncertainty Profiling & Factor Sensitivity  {.scrollable}
+
+### Regime-Specific Uncertainty
+- **Low-SNR Regime ($-20\text{ dB}$ to $-10\text{ dB}$):** High epistemic ($\sim 3.8\text{ dB}$) and aleatoric uncertainty. Noise obfuscates modulation features.
+- **High-SNR Regime ($+15\text{ dB}$ to $+30\text{ dB}$):** Epistemic uncertainty contracts to $< 0.9\text{ dB}$. High confidence and clear signal structure.
+
+### Gradient Factor Sensitivity Analysis (Bai et al., 2009)
+$$S_k = \frac{1}{N_{\text{test}} S}\sum_{i=1}^{N_{\text{test}}}\sum_{s=1}^S \left| \frac{\partial \mu(\mathbf{x}_i; \mathbf{w}^{(s)})}{\partial x_{ik}} \right|$$
+
+```
+Feature Sensitivity Ranking:
+  [██████████████████████████] IQ_sd     (Sk = 0.48) ◄── Dominant
+  [█████████████████████     ] I_power   (Sk = 0.43)
+  [████████████████████      ] Q_power   (Sk = 0.42)
+  [██                        ] I_mean    (Sk = 0.03) ◄── Minimal
+  [██                        ] Q_mean    (Sk = 0.02)
+```
+- In zero-mean baseband signals, **variance and envelope power govern SNR**, not DC offsets.
+
+
+
+---
+
+## 12. Operational Implications & Conclusion  {.scrollable}
+
+::: {.panel-tabset}
+
+### Tactical Electronic Warfare Takeaways
+1. **Adaptive ECCM Triggers:** When $$\sigma_{\text{epistemic}}$$ spikes, the cognitive radio detects an anomalous, jammed RF state and triggers tactical frequency hopping.
+2. **Robust Situational Awareness:** Provides pilots and autonomous drone swarms with actionable confidence intervals rather than misleading point estimates.
+
+
+### Future Roadmap
+- Scale to the full 2.55-million frame RadioML benchmark via distributed variational inference.
+- Evaluate out-of-distribution detection on specialized pulse and chirp jamming signatures.
+- Deploy quantized BNN inference onto edge Software Defined Radios (Ettus USRP / FPGA).
+
+:::
+
+
+
+::: {.callout-tip}
+### Final Thought
+*"In contested military operations, an estimate without uncertainty is a liability. Bayesian neural networks turn that liability into tactical awareness."*
+:::
+
+
+```
